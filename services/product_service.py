@@ -126,8 +126,11 @@ class ProductService(BaseServiceImpl):
             InstanceNotFoundError: If product doesn't exist
             ValueError: If validation fails
         """
+        from sqlalchemy import select
+        from repositories.base_repository_impl import InstanceNotFoundError
+        
         # Build cache keys BEFORE update (prepare for invalidation)
-        cache_key = self.cache.build_key(self.cache_prefix, "id", id=id_key)
+        cache_key = self.cache.build_key(self.cache_prefix, "id", id_key)
 
         try:
             # Obtener datos y limpiar campos no válidos
@@ -139,26 +142,40 @@ class ProductService(BaseServiceImpl):
                 del data['category_name']
             if 'rating' in data:
                 del data['rating']
+            if 'reviews' in data:
+                del data['reviews']
+            if 'order_details' in data:
+                del data['order_details']
+            if 'id_key' in data:
+                del data['id_key']
             
-            # Obtener producto existente
-            existing = self.repository.get_one(id_key)
+            # Obtener el MODELO SQLAlchemy directamente (no el schema)
+            stmt = select(ProductModel).where(ProductModel.id_key == id_key)
+            existing = self._repository.session.scalars(stmt).first()
             
-            # Actualizar campos
+            if existing is None:
+                raise InstanceNotFoundError(f"Product with id {id_key} not found")
+            
+            # Actualizar campos en el modelo
             for key, value in data.items():
                 if hasattr(existing, key):
                     setattr(existing, key, value)
             
-            # Guardar cambios
-            updated_product = self.repository.save(existing)
+            # Commit los cambios (el modelo ya está en la sesión)
+            self._repository.session.commit()
+            self._repository.session.refresh(existing)
 
             # Invalidar cache después de éxito
             self.cache.delete(cache_key)
             self._invalidate_list_cache()
 
             logger.info(f"Product {id_key} updated and cache invalidated successfully")
-            return ProductSchema.model_validate(updated_product)
+            return ProductSchema.model_validate(existing)
 
+        except InstanceNotFoundError:
+            raise
         except Exception as e:
+            self._repository.session.rollback()
             logger.error(f"Failed to update product {id_key}: {e}")
             raise
 
