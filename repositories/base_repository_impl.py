@@ -115,7 +115,21 @@ class BaseRepositoryImpl(BaseRepository):
 
             stmt = select(self.model).offset(skip).limit(limit)
             models = self.session.scalars(stmt).all()
-            return [self.schema.model_validate(model) for model in models]
+            
+            # Convert models to schemas with error handling
+            result = []
+            for model in models:
+                try:
+                    result.append(self.schema.model_validate(model))
+                except Exception as validation_error:
+                    self.logger.error(
+                        f"Validation error for {self.model.__name__} id={getattr(model, 'id_key', 'unknown')}: "
+                        f"{validation_error}"
+                    )
+                    # Skip invalid records or re-raise based on strictness
+                    raise
+            
+            return result
 
         except ValueError:
             raise

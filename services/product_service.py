@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from models.product import ProductModel
 from repositories.product_repository import ProductRepository
-from schemas.product_schema import ProductSchema
+from schemas.product_schema import ProductSchema, ReviewEmbedded
 from services.base_service_impl import BaseServiceImpl
 from services.cache_service import cache_service
 from utils.logging_utils import get_sanitized_logger
@@ -24,6 +24,52 @@ class ProductService(BaseServiceImpl):
         )
         self.cache = cache_service
         self.cache_prefix = "products"
+
+    def _model_to_schema(self, product: ProductModel) -> ProductSchema:
+        """
+        Convert ProductModel to ProductSchema avoiding circular references.
+        
+        Args:
+            product: SQLAlchemy ProductModel instance
+            
+        Returns:
+            ProductSchema with embedded reviews (non-recursive)
+        """
+        # Convert reviews to embedded format (without product reference)
+        embedded_reviews = None
+        if hasattr(product, 'reviews') and product.reviews:
+            embedded_reviews = [
+                ReviewEmbedded(
+                    id_key=review.id_key,
+                    rating=review.rating,
+                    comment=review.comment,
+                    product_id=review.product_id
+                )
+                for review in product.reviews
+            ]
+        
+        # Calculate average rating
+        avg_rating = None
+        if embedded_reviews:
+            ratings = [r.rating for r in embedded_reviews if r.rating is not None]
+            if ratings:
+                avg_rating = sum(ratings) / len(ratings)
+        
+        # Get category name if available
+        category_name = None
+        if hasattr(product, 'category') and product.category:
+            category_name = product.category.name
+        
+        return ProductSchema(
+            id_key=product.id_key,
+            name=product.name,
+            price=product.price,
+            stock=product.stock,
+            category_id=product.category_id,
+            category_name=category_name,
+            rating=avg_rating,
+            reviews=embedded_reviews
+        )
 
     def get_all(self, skip: int = 0, limit: int = 100) -> List[ProductSchema]:
         """
@@ -47,9 +93,16 @@ class ProductService(BaseServiceImpl):
             # Convert dict list back to ProductSchema list
             return [ProductSchema(**p) for p in cached_products]
 
-        # Cache miss - get from database
+        # Cache miss - get from database using custom conversion
         logger.debug(f"Cache MISS: {cache_key}")
-        products = super().get_all(skip, limit)
+        
+        # Get models directly from repository session
+        from sqlalchemy import select
+        stmt = select(ProductModel).offset(skip).limit(limit)
+        models = self._repository.session.scalars(stmt).all()
+        
+        # Convert using our custom method to avoid recursion
+        products = [self._model_to_schema(model) for model in models]
 
         # Cache the result (convert to dict for JSON serialization)
         products_dict = [p.model_dump() for p in products]
@@ -72,9 +125,19 @@ class ProductService(BaseServiceImpl):
             logger.debug(f"Cache HIT: {cache_key}")
             return ProductSchema(**cached_product)
 
-        # Get from database
+        # Get from database using custom conversion
         logger.debug(f"Cache MISS: {cache_key}")
-        product = super().get_one(id_key)
+        
+        from sqlalchemy import select
+        from repositories.base_repository_impl import InstanceNotFoundError
+        
+        stmt = select(ProductModel).where(ProductModel.id_key == id_key)
+        model = self._repository.session.scalars(stmt).first()
+        
+        if model is None:
+            raise InstanceNotFoundError(f"Product with id {id_key} not found")
+        
+        product = self._model_to_schema(model)
 
         # Cache the result
         self.cache.set(cache_key, product.model_dump())
