@@ -13,12 +13,20 @@ if TYPE_CHECKING:
 class ProductSchema(BaseSchema):
     """Schema for Product entity with validations."""
 
-    name: str = Field(..., min_length=1, max_length=200, description="Product name (required)")
-    price: float = Field(..., gt=0, description="Product price (must be greater than 0, required)")
-    stock: int = Field(default=0, ge=0, description="Product stock quantity (must be >= 0)")
+    name: Optional[str] = Field(None, min_length=1, max_length=200, description="Product name (required)")
+    price: Optional[float] = Field(None, gt=0, description="Product price (must be greater than 0, required)")
+    stock: Optional[int] = Field(default=0, ge=0, description="Product stock quantity (must be >= 0)")
 
-    category_id: int = Field(..., description="Category ID reference (required)")
+    category_id: Optional[int] = None  # Permitir None para productos sin categoría
 
     category: Optional['CategorySchema'] = None
     reviews: Optional[List['ReviewSchema']] = []
     order_details: Optional[List['OrderDetailSchema']] = []
+
+    # Campos de solo lectura (calculados)
+    category_name: Optional[str] = None
+    rating: Optional[float] = Field(default=None, ge=0, le=5)
+
+    class Config:
+        from_attributes = True
+        arbitrary_types_allowed = True
