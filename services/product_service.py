@@ -1,16 +1,15 @@
 """Product service with Redis caching integration and sanitized logging."""
-import logging
-from typing import List, Optional
+from typing import List
 from sqlalchemy.orm import Session
 
 from models.product import ProductModel
 from repositories.product_repository import ProductRepository
-from schemas.product_schema import ProductSchema
+from schemas.product_schema import ProductSchema, ReviewEmbedded
 from services.base_service_impl import BaseServiceImpl
 from services.cache_service import cache_service
 from utils.logging_utils import get_sanitized_logger
 
-logger = get_sanitized_logger(__name__)  # P11: Sanitized logging
+logger = get_sanitized_logger(__name__)
 
 
 class ProductService(BaseServiceImpl):
@@ -25,6 +24,52 @@ class ProductService(BaseServiceImpl):
         )
         self.cache = cache_service
         self.cache_prefix = "products"
+
+    def _model_to_schema(self, product: ProductModel) -> ProductSchema:
+        """
+        Convert ProductModel to ProductSchema avoiding circular references.
+        
+        Args:
+            product: SQLAlchemy ProductModel instance
+            
+        Returns:
+            ProductSchema with embedded reviews (non-recursive)
+        """
+        # Convert reviews to embedded format (without product reference)
+        embedded_reviews = None
+        if hasattr(product, 'reviews') and product.reviews:
+            embedded_reviews = [
+                ReviewEmbedded(
+                    id_key=review.id_key,
+                    rating=review.rating,
+                    comment=review.comment,
+                    product_id=review.product_id
+                )
+                for review in product.reviews
+            ]
+        
+        # Calculate average rating
+        avg_rating = None
+        if embedded_reviews:
+            ratings = [r.rating for r in embedded_reviews if r.rating is not None]
+            if ratings:
+                avg_rating = sum(ratings) / len(ratings)
+        
+        # Get category name if available
+        category_name = None
+        if hasattr(product, 'category') and product.category:
+            category_name = product.category.name
+        
+        return ProductSchema(
+            id_key=product.id_key,
+            name=product.name,
+            price=product.price,
+            stock=product.stock,
+            category_id=product.category_id,
+            category_name=category_name,
+            rating=avg_rating,
+            reviews=embedded_reviews
+        )
 
     def get_all(self, skip: int = 0, limit: int = 100) -> List[ProductSchema]:
         """
@@ -48,9 +93,16 @@ class ProductService(BaseServiceImpl):
             # Convert dict list back to ProductSchema list
             return [ProductSchema(**p) for p in cached_products]
 
-        # Cache miss - get from database
+        # Cache miss - get from database using custom conversion
         logger.debug(f"Cache MISS: {cache_key}")
-        products = super().get_all(skip, limit)
+        
+        # Get models directly from repository session
+        from sqlalchemy import select
+        stmt = select(ProductModel).offset(skip).limit(limit)
+        models = self._repository.session.scalars(stmt).all()
+        
+        # Convert using our custom method to avoid recursion
+        products = [self._model_to_schema(model) for model in models]
 
         # Cache the result (convert to dict for JSON serialization)
         products_dict = [p.model_dump() for p in products]
@@ -73,9 +125,19 @@ class ProductService(BaseServiceImpl):
             logger.debug(f"Cache HIT: {cache_key}")
             return ProductSchema(**cached_product)
 
-        # Get from database
+        # Get from database using custom conversion
         logger.debug(f"Cache MISS: {cache_key}")
-        product = super().get_one(id_key)
+        
+        from sqlalchemy import select
+        from repositories.base_repository_impl import InstanceNotFoundError
+        
+        stmt = select(ProductModel).where(ProductModel.id_key == id_key)
+        model = self._repository.session.scalars(stmt).first()
+        
+        if model is None:
+            raise InstanceNotFoundError(f"Product with id {id_key} not found")
+        
+        product = self._model_to_schema(model)
 
         # Cache the result
         self.cache.set(cache_key, product.model_dump())
@@ -86,12 +148,31 @@ class ProductService(BaseServiceImpl):
         """
         Create new product and invalidate list cache
         """
-        product = super().save(schema)
+        # Obtener los datos excluyendo relaciones anidadas
+        data = schema.model_dump(exclude_unset=True)
 
-        # Invalidate list cache (all paginated lists)
+        # Eliminar 'category' si viene como objeto anidado (solo necesitamos category_id)
+        if 'category' in data:
+            del data['category']
+        
+        # Eliminar campos que no son columnas del modelo
+        if 'category_name' in data:
+            del data['category_name']
+        
+        if 'rating' in data:
+            del data['rating']
+
+        # Crear la instancia del modelo directamente
+        product = ProductModel(**data)
+
+        # Guardar usando el repositorio
+        saved_product = self.repository.save(product)
+
+        # Invalidate list cache
         self._invalidate_list_cache()
 
-        return product
+        # Convertir modelo guardado a schema usando el método heredado
+        return ProductSchema.model_validate(saved_product)
 
     def update(self, id_key: int, schema: ProductSchema) -> ProductSchema:
         """
@@ -108,22 +189,56 @@ class ProductService(BaseServiceImpl):
             InstanceNotFoundError: If product doesn't exist
             ValueError: If validation fails
         """
+        from sqlalchemy import select
+        from repositories.base_repository_impl import InstanceNotFoundError
+        
         # Build cache keys BEFORE update (prepare for invalidation)
-        cache_key = self.cache.build_key(self.cache_prefix, "id", id=id_key)
+        cache_key = self.cache.build_key(self.cache_prefix, "id", id_key)
 
         try:
-            # Update in database (atomic transaction)
-            product = super().update(id_key, schema)
+            # Obtener datos y limpiar campos no válidos
+            data = schema.model_dump(exclude_unset=True)
+            
+            if 'category' in data:
+                del data['category']
+            if 'category_name' in data:
+                del data['category_name']
+            if 'rating' in data:
+                del data['rating']
+            if 'reviews' in data:
+                del data['reviews']
+            if 'order_details' in data:
+                del data['order_details']
+            if 'id_key' in data:
+                del data['id_key']
+            
+            # Obtener el MODELO SQLAlchemy directamente (no el schema)
+            stmt = select(ProductModel).where(ProductModel.id_key == id_key)
+            existing = self._repository.session.scalars(stmt).first()
+            
+            if existing is None:
+                raise InstanceNotFoundError(f"Product with id {id_key} not found")
+            
+            # Actualizar campos en el modelo
+            for key, value in data.items():
+                if hasattr(existing, key):
+                    setattr(existing, key, value)
+            
+            # Commit los cambios (el modelo ya está en la sesión)
+            self._repository.session.commit()
+            self._repository.session.refresh(existing)
 
-            # Only invalidate cache AFTER successful DB commit
+            # Invalidar cache después de éxito
             self.cache.delete(cache_key)
             self._invalidate_list_cache()
 
             logger.info(f"Product {id_key} updated and cache invalidated successfully")
-            return product
+            return ProductSchema.model_validate(existing)
 
+        except InstanceNotFoundError:
+            raise
         except Exception as e:
-            # If update fails, cache remains consistent (no invalidation)
+            self._repository.session.rollback()
             logger.error(f"Failed to update product {id_key}: {e}")
             raise
 

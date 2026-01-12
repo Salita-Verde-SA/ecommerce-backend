@@ -49,20 +49,13 @@ class RateLimiterMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Callable):
         """
         Process request with rate limiting
-
-        Args:
-            request: Incoming HTTP request
-            call_next: Next middleware/handler
-
-        Returns:
-            HTTP response
         """
         # Skip if disabled or Redis unavailable
         if not self.enabled or not self.redis_client:
             return await call_next(request)
 
-        # Skip rate limiting for health check endpoint
-        if request.url.path == "/health_check":
+        # Skip rate limiting for health check endpoint (with or without trailing slash)
+        if request.url.path.rstrip('/') == "/health_check":
             return await call_next(request)
 
         # Get client IP

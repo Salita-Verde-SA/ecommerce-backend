@@ -2,6 +2,7 @@
 import logging
 from typing import List
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from models.category import CategoryModel
 from repositories.category_repository import CategoryRepository
@@ -9,6 +10,7 @@ from schemas.category_schema import CategorySchema
 from services.base_service_impl import BaseServiceImpl
 from services.cache_service import cache_service
 from utils.logging_utils import get_sanitized_logger
+from repositories.base_repository_impl import InstanceNotFoundError
 
 logger = get_sanitized_logger(__name__)
 
@@ -101,17 +103,39 @@ class CategoryService(BaseServiceImpl):
             ValueError: If validation fails
         """
         try:
-            # Update in database first (atomic transaction)
-            category = super().update(id_key, schema)
+            # Obtener datos del schema
+            data = schema.model_dump(exclude_unset=True)
+            
+            # Eliminar id_key del data para no intentar actualizarlo
+            if 'id_key' in data:
+                del data['id_key']
+            
+            # Obtener el MODELO SQLAlchemy directamente (no el schema)
+            stmt = select(CategoryModel).where(CategoryModel.id_key == id_key)
+            existing = self._repository.session.scalars(stmt).first()
+            
+            if existing is None:
+                raise InstanceNotFoundError(f"Category with id {id_key} not found")
+            
+            # Actualizar campos en el modelo
+            for key, value in data.items():
+                if hasattr(existing, key):
+                    setattr(existing, key, value)
+            
+            # Commit los cambios
+            self._repository.session.commit()
+            self._repository.session.refresh(existing)
 
             # Only invalidate cache AFTER successful DB commit
             self._invalidate_all_cache()
 
             logger.info(f"Category {id_key} updated and cache invalidated successfully")
-            return category
+            return CategorySchema.model_validate(existing)
 
+        except InstanceNotFoundError:
+            raise
         except Exception as e:
-            # If update fails, cache remains consistent (no invalidation)
+            self._repository.session.rollback()
             logger.error(f"Failed to update category {id_key}: {e}")
             raise
 
