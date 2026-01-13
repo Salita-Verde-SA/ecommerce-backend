@@ -106,10 +106,3 @@ databases:
     postgresMajorVersion: "13"
     # Nota: Render no permite configurar max_connections, shared_buffers, etc.
     # en el plan gratuito. Esas optimizaciones aplican solo en planes superiores.
-
-# Redis Cache
-redis:
-  - name: ecommerce-redis
-    plan: free # free, starter, standard, pro
-    region: oregon
-    # maxmemoryPolicy: allkeys-lru (configuración por defecto en Render)
