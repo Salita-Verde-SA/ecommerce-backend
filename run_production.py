@@ -28,14 +28,6 @@ LIMIT_CONCURRENCY = int(os.getenv('LIMIT_CONCURRENCY', '1000'))
 LIMIT_MAX_REQUESTS = int(os.getenv('LIMIT_MAX_REQUESTS', '10000'))
 
 if __name__ == "__main__":
-    # Create database tables before starting server
-    print("📦 Creating database tables...")
-    try:
-        create_tables()
-        print("✅ Database tables created successfully\n")
-    except Exception as e:
-        print(f"⚠️  Database tables may already exist or error occurred: {e}\n")
-
     print(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║  🚀 FastAPI E-commerce - High Performance Production Mode  ║
