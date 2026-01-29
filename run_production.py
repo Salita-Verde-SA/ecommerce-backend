@@ -18,7 +18,7 @@ DEFAULT_WORKERS = min(max(2 * CPU_COUNT + 1, 4), 8)  # Between 4-8 workers
 # Configuration from environment variables
 WORKERS = int(os.getenv('UVICORN_WORKERS', DEFAULT_WORKERS))
 HOST = os.getenv('API_HOST', '0.0.0.0')
-PORT = int(os.getenv('API_PORT', '8000'))
+PORT = int(os.getenv('PORT', '8000'))
 RELOAD = os.getenv('RELOAD', 'false').lower() == 'true'
 
 # Performance tuning
