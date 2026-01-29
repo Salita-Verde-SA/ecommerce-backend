@@ -49,8 +49,5 @@ COPY . .
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:$PORT/health_check || exit 1
 
-# Expose port
-EXPOSE 8000
-
-# Run main.py when the container launches
-CMD ["python", "-m", "main"]
+# Run the application with uvicorn
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]

@@ -54,7 +54,7 @@ LOGGING_CONFIG = {
         },
     },
     'root': {
-        'level': os.getenv('LOG_LEVEL', 'INFO'),
+        'level': os.getenv('LOG_LEVEL', 'INFO').upper(),
         'handlers': ['console', 'file', 'error_file'],
     },
     'loggers': {
